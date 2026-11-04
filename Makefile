@@ -71,7 +71,7 @@ vet:
 # Generate manifests e.g. CRD, RBAC etc.
 .PHONY: generate
 generate: controller-gen gojsontoyaml ui/node_modules ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) object:headerFile="kubernetes/hack/boilerplate.go.txt" crd rbac:roleName="pyrra-kubernetes" webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) object:headerFile="kubernetes/hack/boilerplate.go.txt" crd:allowDangerousTypes=true rbac:roleName="pyrra-kubernetes" webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 	# config/crd/bases holds the canonical CRD YAML (stable path for consumers). Derive the
 	# JSON consumed by the jsonnet pipeline from it
 	find config/crd/bases -name '*.yaml' -print0 | xargs -0 -I{} sh -c '$(GOJSONTOYAML) -yamltojson < "$$1" | jq > "$(PWD)/jsonnet/controller-gen/$$(basename -s .yaml $$1).json"' -- {}

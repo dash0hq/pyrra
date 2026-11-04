@@ -14,6 +14,7 @@ import (
 
 // QueryTotal returns a PromQL query to get the total amount of requests served during the window.
 func (o Objective) QueryTotal(window model.Duration, opts GenerationOptions) string {
+	o = o.boolGaugeObjective()
 	expr, err := parser.NewParser(parser.Options{}).ParseExpr(`sum by (grouping) (metric{})`)
 	if err != nil {
 		return ""
@@ -74,6 +75,7 @@ func (o Objective) QueryTotal(window model.Duration, opts GenerationOptions) str
 
 // QueryErrors returns a PromQL query to get the amount of request errors during the window.
 func (o Objective) QueryErrors(window model.Duration, opts GenerationOptions) string {
+	o = o.boolGaugeObjective()
 	switch o.IndicatorType() {
 	case Ratio:
 		expr, err := parser.NewParser(parser.Options{}).ParseExpr(`sum by (grouping) (metric{})`)
@@ -236,6 +238,7 @@ func (o Objective) QueryErrors(window model.Duration, opts GenerationOptions) st
 }
 
 func (o Objective) QueryErrorBudget(opts GenerationOptions) string {
+	o = o.boolGaugeObjective()
 	indicatorType := o.IndicatorType()
 	switch indicatorType {
 	case Ratio:
@@ -687,6 +690,7 @@ func (o Objective) QueryErrorBudgetRaw(opts GenerationOptions) string {
 }
 
 func (o Objective) QueryBurnrate(timerange time.Duration, groupingMatchers []*labels.Matcher) (string, error) {
+	o = o.boolGaugeObjective()
 	metric := ""
 	matchers := map[string]*labels.Matcher{}
 	var groupingMap map[string]struct{}
@@ -885,6 +889,7 @@ func (r objectiveReplacer) replace(node parser.Node) {
 }
 
 func (o Objective) RequestRange(timerange time.Duration, opts GenerationOptions) string {
+	o = o.boolGaugeObjective()
 	switch o.IndicatorType() {
 	case Ratio:
 		expr, err := parser.NewParser(parser.Options{}).ParseExpr(`sum by (group) (rate(metric{}[1s])) > 0`)
@@ -961,6 +966,7 @@ func (o Objective) RequestRange(timerange time.Duration, opts GenerationOptions)
 }
 
 func (o Objective) ErrorsRange(timerange time.Duration, opts GenerationOptions) string {
+	o = o.boolGaugeObjective()
 	switch o.IndicatorType() {
 	case Ratio:
 		expr, err := parser.NewParser(parser.Options{}).ParseExpr(`sum by (group) (rate(errorMetric{matchers="errors"}[1s])) / scalar(sum(rate(metric{matchers="total"}[1s]))) > 0`)

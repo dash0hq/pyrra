@@ -58,6 +58,7 @@ func (o Objective) Alerts() ([]MultiBurnRateAlert, error) {
 }
 
 func (o Objective) Burnrates(opts GenerationOptions) (monitoringv1.RuleGroup, error) {
+	o = o.boolGaugeObjective()
 	sloName := o.Labels.Get(model.MetricNameLabel)
 	externalURL := opts.ExternalURL
 
@@ -429,6 +430,7 @@ func (o Objective) Burnrates(opts GenerationOptions) (monitoringv1.RuleGroup, er
 }
 
 func (o Objective) BurnrateName(rate time.Duration) string {
+	o = o.boolGaugeObjective()
 	var metric string
 
 	switch o.IndicatorType() {
@@ -449,6 +451,7 @@ func (o Objective) BurnrateName(rate time.Duration) string {
 }
 
 func (o Objective) Burnrate(timerange time.Duration, opts GenerationOptions) string {
+	o = o.boolGaugeObjective()
 	switch o.IndicatorType() {
 	case Ratio:
 		expr, err := parser.NewParser(parser.Options{}).ParseExpr(`sum by (grouping) (rate(errorMetric{matchers="errors"}[1s])) / sum by (grouping) (rate(metric{matchers="total"}[1s]))`)
@@ -758,6 +761,7 @@ func (o Objective) SplitIncreaseRules(opts GenerationOptions) (short, long monit
 }
 
 func (o Objective) splitIncreaseRulesForType(sloName string, opts GenerationOptions) (shortRules, longRules []monitoringv1.Rule, err error) {
+	o = o.boolGaugeObjective()
 	switch o.IndicatorType() {
 	case Unknown:
 		return nil, nil, nil
@@ -1394,14 +1398,22 @@ func (o Objective) increaseRuleBoolGauge(sloName string) (shortRules, longRules 
 			return nil, nil, err
 		}
 
+		metric := o.Indicator.BoolGauge.Metric
+		if o.Indicator.Threshold != nil {
+			metric = o.Indicator.Threshold.Metric
+		}
 		objectiveReplacer{
-			metric:   o.Indicator.BoolGauge.Name,
-			matchers: o.Indicator.BoolGauge.LabelMatchers,
+			metric:   metric.Name,
+			matchers: metric.LabelMatchers,
 		}.replace(expr)
 
 		alertLabels := make(map[string]string, len(ruleLabels)+1)
 		for k, v := range ruleLabels {
 			alertLabels[k] = v
+		}
+		if o.Indicator.Threshold != nil {
+			// The source has no synthetic slo label for absent() to retain.
+			alertLabels["slo"] = sloName
 		}
 		// Add severity label for alerts
 		alertLabels["severity"] = o.alertSeverityLabelAbsent()
@@ -1492,6 +1504,7 @@ func burnratesFromWindows(ws []Window) []time.Duration {
 var ErrGroupingUnsupported = errors.New("objective with grouping not supported in generic rules")
 
 func (o Objective) GenericRules(opts GenerationOptions) (monitoringv1.RuleGroup, error) {
+	o = o.boolGaugeObjective()
 	sloName := o.Labels.Get(model.MetricNameLabel)
 	var rules []monitoringv1.Rule
 

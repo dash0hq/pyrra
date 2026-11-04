@@ -19,8 +19,10 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
@@ -152,6 +154,10 @@ type ServiceLevelIndicator struct {
 	// BoolGauge is the indicator that measures whether a boolean gauge is
 	// successful.
 	BoolGauge *BoolGaugeIndicator `json:"bool_gauge,omitempty"`
+
+	// +optional
+	// Threshold measures whether a value meets a threshold in one-minute time slices.
+	Threshold *ThresholdIndicator `json:"threshold,omitempty"`
 }
 
 type Alerting struct {
@@ -235,6 +241,44 @@ type BoolGaugeIndicator struct {
 	Grouping []string `json:"grouping"`
 }
 
+// ThresholdIndicator compares exactly one source against a threshold.
+type ThresholdIndicator struct {
+	// +optional
+	// Histogram selects all buckets of a classic histogram.
+	Histogram *ThresholdHistogram `json:"histogram,omitempty"`
+
+	// +optional
+	// NativeHistogram selects a native histogram.
+	NativeHistogram *ThresholdHistogram `json:"nativeHistogram,omitempty"`
+
+	// +optional
+	// Gauge selects a gauge to compare directly.
+	Gauge *Query `json:"gauge,omitempty"`
+
+	// +kubebuilder:validation:Enum=lt;lte;gt;gte
+	// Op is the comparison operator applied to the source value.
+	Op string `json:"op"`
+
+	// +required
+	// Value is the finite threshold in the source metric's unit.
+	Value *float64 `json:"value"`
+
+	// +optional
+	// Grouping preserves these labels so each group gets its own time-slice checks.
+	Grouping []string `json:"grouping,omitempty"`
+}
+
+// ThresholdHistogram selects a histogram and the quantile to compare.
+type ThresholdHistogram struct {
+	Query `json:",inline"`
+
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1
+	// Quantile is a finite number between zero and one, inclusive.
+	Quantile *float64 `json:"quantile"`
+}
+
 // Query contains a PromQL metric.
 type Query struct {
 	Metric string `json:"metric"`
@@ -285,7 +329,7 @@ func (in *ServiceLevelObjective) validate() (admission.Warnings, error) {
 	if in.Spec.Window == "" {
 		return warnings, fmt.Errorf("window must be set")
 	}
-	_, err = model.ParseDuration(in.Spec.Window)
+	window, err := model.ParseDuration(in.Spec.Window)
 	if err != nil {
 		return warnings, err
 	}
@@ -293,8 +337,18 @@ func (in *ServiceLevelObjective) validate() (admission.Warnings, error) {
 	if in.Spec.ServiceLevelIndicator.Ratio == nil &&
 		in.Spec.ServiceLevelIndicator.Latency == nil &&
 		in.Spec.ServiceLevelIndicator.LatencyNative == nil &&
-		in.Spec.ServiceLevelIndicator.BoolGauge == nil {
-		return warnings, fmt.Errorf("one of ratio, latency, latencyNative or bool_gauge must be set")
+		in.Spec.ServiceLevelIndicator.BoolGauge == nil &&
+		in.Spec.ServiceLevelIndicator.Threshold == nil {
+		return warnings, fmt.Errorf("one of ratio, latency, latencyNative, bool_gauge or threshold must be set")
+	}
+
+	if in.Spec.ServiceLevelIndicator.Threshold != nil {
+		if _, err := in.Spec.ServiceLevelIndicator.thresholdInternal(); err != nil {
+			return warnings, err
+		}
+		if window < model.Duration(14*24*time.Hour) {
+			warnings = append(warnings, "threshold window should be at least 14d so the shortest alert window contains at least two one-minute checks")
+		}
 	}
 
 	if in.Spec.ServiceLevelIndicator.Ratio != nil {
@@ -416,6 +470,108 @@ func (in *ServiceLevelObjective) validate() (admission.Warnings, error) {
 	return warnings, nil
 }
 
+// thresholdInternal validates threshold indicators for both admission and filesystem inputs.
+func (in ServiceLevelIndicator) thresholdInternal() (*slo.ThresholdIndicator, error) {
+	if in.Threshold == nil {
+		return nil, nil
+	}
+	if in.Ratio != nil || in.Latency != nil || in.LatencyNative != nil || in.BoolGauge != nil {
+		return nil, fmt.Errorf("threshold cannot be combined with ratio, latency, latencyNative or bool_gauge")
+	}
+
+	threshold := in.Threshold
+	var query Query
+	var kind string
+	var quantile *float64
+	sources := 0
+	if threshold.Histogram != nil {
+		sources++
+		query, kind, quantile = threshold.Histogram.Query, "histogram", threshold.Histogram.Quantile
+	}
+	if threshold.NativeHistogram != nil {
+		sources++
+		query, kind, quantile = threshold.NativeHistogram.Query, "nativeHistogram", threshold.NativeHistogram.Quantile
+	}
+	if threshold.Gauge != nil {
+		sources++
+		query, kind = *threshold.Gauge, "gauge"
+	}
+	if sources != 1 {
+		return nil, fmt.Errorf("threshold must set exactly one of histogram, nativeHistogram or gauge")
+	}
+
+	switch threshold.Op {
+	case "lt", "lte", "gt", "gte":
+	default:
+		return nil, fmt.Errorf("threshold op must be one of lt, lte, gt or gte")
+	}
+	if threshold.Value == nil {
+		return nil, fmt.Errorf("threshold value must be set")
+	}
+	if math.IsNaN(*threshold.Value) || math.IsInf(*threshold.Value, 0) {
+		return nil, fmt.Errorf("threshold value must be finite")
+	}
+	var quantileValue float64
+	if kind != "gauge" {
+		if quantile == nil {
+			return nil, fmt.Errorf("threshold %s quantile must be set", kind)
+		}
+		quantileValue = *quantile
+		if math.IsNaN(quantileValue) || math.IsInf(quantileValue, 0) || quantileValue < 0 || quantileValue > 1 {
+			return nil, fmt.Errorf("threshold %s quantile must be finite and between 0 and 1", kind)
+		}
+	}
+
+	if query.Metric == "" {
+		return nil, fmt.Errorf("threshold %s metric must be set", kind)
+	}
+	expr, err := parser.NewParser(parser.Options{}).ParseExpr(query.Metric)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse threshold %s metric: %w", kind, err)
+	}
+	vec, ok := expr.(*parser.VectorSelector)
+	if !ok {
+		return nil, fmt.Errorf("threshold %s metric must be a vector selector, but got %T", kind, expr)
+	}
+	if vec.OriginalOffset != 0 || vec.OriginalOffsetExpr != nil || vec.Timestamp != nil || vec.StartOrEnd != 0 {
+		return nil, fmt.Errorf("threshold %s metric must not use offset or @ modifiers", kind)
+	}
+	for _, matcher := range vec.LabelMatchers {
+		if kind == "histogram" && matcher.Name == labels.BucketLabel {
+			return nil, fmt.Errorf("threshold histogram metric must not contain an le label matcher; the whole histogram is required")
+		}
+		if matcher.Name == "slo" {
+			return nil, fmt.Errorf("threshold metric must not contain the reserved slo label")
+		}
+	}
+
+	seen := make(map[string]struct{}, len(threshold.Grouping))
+	for _, label := range threshold.Grouping {
+		if !model.LegacyValidation.IsValidLabelName(label) {
+			return nil, fmt.Errorf("threshold grouping label %q is invalid", label)
+		}
+		if label == "slo" || label == model.MetricNameLabel || (kind == "histogram" && label == labels.BucketLabel) {
+			return nil, fmt.Errorf("threshold grouping label %q is reserved", label)
+		}
+		if _, ok := seen[label]; ok {
+			return nil, fmt.Errorf("threshold grouping label %q is repeated", label)
+		}
+		seen[label] = struct{}{}
+	}
+
+	return &slo.ThresholdIndicator{
+		Metric: slo.Metric{
+			Name:          vec.Name,
+			LabelMatchers: vec.LabelMatchers,
+		},
+		Quantile: quantileValue,
+		Kind:     kind,
+		Op:       threshold.Op,
+		Value:    *threshold.Value,
+		Grouping: append([]string(nil), threshold.Grouping...),
+	}, nil
+}
+
 func (in *ServiceLevelObjective) Internal() (slo.Objective, error) {
 	target, err := strconv.ParseFloat(in.Spec.Target, 64)
 	if err != nil {
@@ -425,6 +581,11 @@ func (in *ServiceLevelObjective) Internal() (slo.Objective, error) {
 	window, err := model.ParseDuration(in.Spec.Window)
 	if err != nil {
 		return slo.Objective{}, fmt.Errorf("failed to parse objective window: %w", err)
+	}
+
+	threshold, err := in.Spec.ServiceLevelIndicator.thresholdInternal()
+	if err != nil {
+		return slo.Objective{}, err
 	}
 
 	var alerting slo.Alerting
@@ -657,6 +818,7 @@ func (in *ServiceLevelObjective) Internal() (slo.Objective, error) {
 			Latency:       latency,
 			LatencyNative: latencyNative,
 			BoolGauge:     boolGauge,
+			Threshold:     threshold,
 		},
 	}, nil
 }

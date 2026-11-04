@@ -210,6 +210,71 @@ spec:
                     - errors
                     - total
                     type: object
+                  threshold:
+                    description: Threshold measures whether a value meets a threshold
+                      in one-minute time slices.
+                    properties:
+                      gauge:
+                        description: Gauge selects a gauge to compare directly.
+                        properties:
+                          metric:
+                            type: string
+                        required:
+                        - metric
+                        type: object
+                      grouping:
+                        description: Grouping preserves these labels so each group
+                          gets its own time-slice checks.
+                        items:
+                          type: string
+                        type: array
+                      histogram:
+                        description: Histogram selects all buckets of a classic histogram.
+                        properties:
+                          metric:
+                            type: string
+                          quantile:
+                            description: Quantile is a finite number between zero
+                              and one, inclusive.
+                            maximum: 1
+                            minimum: 0
+                            type: number
+                        required:
+                        - metric
+                        - quantile
+                        type: object
+                      nativeHistogram:
+                        description: NativeHistogram selects a native histogram.
+                        properties:
+                          metric:
+                            type: string
+                          quantile:
+                            description: Quantile is a finite number between zero
+                              and one, inclusive.
+                            maximum: 1
+                            minimum: 0
+                            type: number
+                        required:
+                        - metric
+                        - quantile
+                        type: object
+                      op:
+                        description: Op is the comparison operator applied to the
+                          source value.
+                        enum:
+                        - lt
+                        - lte
+                        - gt
+                        - gte
+                        type: string
+                      value:
+                        description: Value is the finite threshold in the source metric's
+                          unit.
+                        type: number
+                    required:
+                    - op
+                    - value
+                    type: object
                 type: object
               partial_response_strategy:
                 default: abort

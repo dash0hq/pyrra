@@ -82,6 +82,7 @@ const (
 	Latency       IndicatorType = iota
 	LatencyNative IndicatorType = iota
 	BoolGauge     IndicatorType = iota
+	Threshold     IndicatorType = iota
 )
 
 func (o Objective) IndicatorType() IndicatorType {
@@ -97,6 +98,9 @@ func (o Objective) IndicatorType() IndicatorType {
 	if o.Indicator.BoolGauge != nil && o.Indicator.BoolGauge.Name != "" {
 		return BoolGauge
 	}
+	if o.Indicator.Threshold != nil {
+		return Threshold
+	}
 	return Unknown
 }
 
@@ -110,6 +114,8 @@ func (o Objective) Grouping() []string {
 		return o.Indicator.LatencyNative.Grouping
 	case BoolGauge:
 		return o.Indicator.BoolGauge.Grouping
+	case Threshold:
+		return o.Indicator.Threshold.Grouping
 	default:
 		return nil
 	}
@@ -136,6 +142,7 @@ type Indicator struct {
 	Latency       *LatencyIndicator
 	LatencyNative *LatencyNativeIndicator
 	BoolGauge     *BoolGaugeIndicator
+	Threshold     *ThresholdIndicator
 }
 
 type RatioIndicator struct {
@@ -158,6 +165,17 @@ type LatencyNativeIndicator struct {
 
 type BoolGaugeIndicator struct {
 	Metric
+	Grouping []string
+}
+
+// ThresholdIndicator compares one value per minute, then accounts for those
+// checks using the boolean-gauge rules. Metric always refers to the source.
+type ThresholdIndicator struct {
+	Metric   Metric
+	Kind     string
+	Quantile float64
+	Op       string
+	Value    float64
 	Grouping []string
 }
 

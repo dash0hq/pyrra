@@ -407,7 +407,7 @@ func TestServiceLevelObjective_Validate(t *testing.T) {
 		empty.Spec.Window = "2w"
 		warn, err = empty.ValidateCreate(ctx, empty)
 		require.Nil(t, warn)
-		require.EqualError(t, err, "one of ratio, latency, latencyNative or bool_gauge must be set")
+		require.EqualError(t, err, "one of ratio, latency, latencyNative, bool_gauge or threshold must be set")
 	})
 
 	t.Run("ratio", func(t *testing.T) {

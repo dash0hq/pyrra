@@ -55,6 +55,22 @@ export interface ServiceLevelObjective {
           "metric": string
         }
       }
+      "threshold"?: {
+        "gauge"?: {
+          "metric": string
+        }
+        "grouping"?: string[]
+        "histogram"?: {
+          "metric": string
+          "quantile": number
+        }
+        "nativeHistogram"?: {
+          "metric": string
+          "quantile": number
+        }
+        "op": "lt" | "lte" | "gt" | "gte"
+        "value": number
+      }
     }
     "partial_response_strategy"?: "abort" | "warn" | ""
     "performanceOverAccuracy"?: boolean

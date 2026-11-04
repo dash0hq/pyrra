@@ -349,6 +349,11 @@ func writeRuleFile(logger log.Logger, file, prometheusFolder string, genericRule
 		return writeRuleFileSplit(logger, kubeObjective, objective, file, prometheusFolder, genericRules, operatorRule, opts)
 	}
 
+	threshold, err := objective.ThresholdRules(opts)
+	if err != nil {
+		return fmt.Errorf("failed to get threshold rules: %w", err)
+	}
+
 	increases, err := objective.IncreaseRules(opts)
 	if err != nil {
 		return fmt.Errorf("failed to get increase rules: %w", err)
@@ -361,6 +366,9 @@ func writeRuleFile(logger log.Logger, file, prometheusFolder string, genericRule
 
 	rule := monitoringv1.PrometheusRuleSpec{
 		Groups: []monitoringv1.RuleGroup{increases, burnrates},
+	}
+	if len(threshold.Rules) > 0 {
+		rule.Groups = append([]monitoringv1.RuleGroup{threshold}, rule.Groups...)
 	}
 
 	if genericRules {
@@ -382,6 +390,11 @@ func writeRuleFile(logger log.Logger, file, prometheusFolder string, genericRule
 }
 
 func writeRuleFileSplit(logger log.Logger, kubeObjective v1alpha1.ServiceLevelObjective, objective slo.Objective, file, prometheusFolder string, genericRules, operatorRule bool, opts slo.GenerationOptions) error {
+	threshold, err := objective.ThresholdRules(opts)
+	if err != nil {
+		return fmt.Errorf("failed to get threshold rules: %w", err)
+	}
+
 	shortGroup, longGroup, err := objective.SplitIncreaseRules(opts)
 	if err != nil {
 		return fmt.Errorf("failed to get split increase rules: %w", err)
@@ -399,6 +412,9 @@ func writeRuleFileSplit(logger log.Logger, kubeObjective v1alpha1.ServiceLevelOb
 	// Write short rules (5m increase + burnrates + alerts + generic) to {name}-short.yaml
 	shortSpec := monitoringv1.PrometheusRuleSpec{
 		Groups: []monitoringv1.RuleGroup{shortGroup, burnrates},
+	}
+	if len(threshold.Rules) > 0 {
+		shortSpec.Groups = append([]monitoringv1.RuleGroup{threshold}, shortSpec.Groups...)
 	}
 
 	if genericRules {

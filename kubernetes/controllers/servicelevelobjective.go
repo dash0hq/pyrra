@@ -200,16 +200,24 @@ func (r *ServiceLevelObjectiveReconciler) cleanupStalePrometheusRules(ctx contex
 }
 
 func (r *ServiceLevelObjectiveReconciler) reconcileMimirRuleGroup(ctx context.Context, logger kitlog.Logger, kubeObjective pyrrav1alpha1.ServiceLevelObjective) (ctrl.Result, error) {
-	newRuleGroup, err := makeMimirRuleGroup(kubeObjective, r.GenericRules, r.MimirWriteAlertingRules, r.EnablePrometheus3Migration, r.PyrraExternalURL)
+	newRuleGroups, err := makeMimirRuleGroups(kubeObjective, r.GenericRules, r.MimirWriteAlertingRules, r.EnablePrometheus3Migration, r.PyrraExternalURL)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	level.Info(logger).Log("msg", "updating mimir rule", "name", newRuleGroup.Name)
+	for _, group := range newRuleGroups {
+		level.Info(logger).Log("msg", "updating mimir rule", "name", group.Name)
+		if err := r.MimirClient.SetRuleGroup(ctx, kubeObjective.GetName(), group); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
-	err = r.MimirClient.SetRuleGroup(ctx, kubeObjective.GetName(), *newRuleGroup)
-	if err != nil {
-		return ctrl.Result{}, err
+	// Remove the extra group if the indicator changed away from threshold.
+	// Deleting an absent group is safe on ordinary reconciliations and retries.
+	if len(newRuleGroups) == 1 {
+		if err := r.MimirClient.DeleteRuleGroup(ctx, kubeObjective.GetName(), kubeObjective.GetName()+"-threshold"); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	kubeObjective.Status.Type = "MimirRule"
@@ -292,6 +300,11 @@ func makeConfigMap(name string, kubeObjective pyrrav1alpha1.ServiceLevelObjectiv
 		ExternalURL:                externalURL,
 	}
 
+	threshold, err := objective.ThresholdRules(opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get threshold rules: %w", err)
+	}
+
 	increases, err := objective.IncreaseRules(opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get increase rules: %w", err)
@@ -303,6 +316,9 @@ func makeConfigMap(name string, kubeObjective pyrrav1alpha1.ServiceLevelObjectiv
 
 	rule := monitoringv1.PrometheusRuleSpec{
 		Groups: []monitoringv1.RuleGroup{increases, burnrates},
+	}
+	if len(threshold.Rules) > 0 {
+		rule.Groups = append([]monitoringv1.RuleGroup{threshold}, rule.Groups...)
 	}
 
 	if genericRules {
@@ -355,7 +371,7 @@ func makeConfigMap(name string, kubeObjective pyrrav1alpha1.ServiceLevelObjectiv
 	}, nil
 }
 
-func makeMimirRuleGroup(kubeObjective pyrrav1alpha1.ServiceLevelObjective, genericRules, writeAlertingRules, enablePrometheus3Migration bool, externalURL string) (*rulefmt.RuleGroup, error) {
+func makeMimirRuleGroups(kubeObjective pyrrav1alpha1.ServiceLevelObjective, genericRules, writeAlertingRules, enablePrometheus3Migration bool, externalURL string) ([]rulefmt.RuleGroup, error) {
 	objective, err := kubeObjective.Internal()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get objective: %w", err)
@@ -364,6 +380,11 @@ func makeMimirRuleGroup(kubeObjective pyrrav1alpha1.ServiceLevelObjective, gener
 	opts := slo.GenerationOptions{
 		EnablePrometheus3Migration: enablePrometheus3Migration,
 		ExternalURL:                externalURL,
+	}
+
+	threshold, err := objective.ThresholdRules(opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get threshold rules: %w", err)
 	}
 
 	increases, err := objective.IncreaseRules(opts)
@@ -405,11 +426,20 @@ func makeMimirRuleGroup(kubeObjective pyrrav1alpha1.ServiceLevelObjective, gener
 		i++
 	}
 
-	return &rulefmt.RuleGroup{
+	groups := []rulefmt.RuleGroup{}
+	if len(threshold.Rules) > 0 {
+		groups = append(groups, rulefmt.RuleGroup{
+			Name:     threshold.Name,
+			Interval: model.Duration(time.Minute),
+			Rules:    prometheusRulesToMimirRules(threshold.Rules, writeAlertingRules),
+		})
+	}
+	groups = append(groups, rulefmt.RuleGroup{
 		Name:     kubeObjective.GetName(),
 		Interval: model.Duration(time.Second * 30),
 		Rules:    combinedRules,
-	}, nil
+	})
+	return groups, nil
 }
 
 func prometheusRuleToMimirRule(promRule monitoringv1.Rule) rulefmt.Rule {
@@ -457,6 +487,11 @@ func makePrometheusRule(kubeObjective pyrrav1alpha1.ServiceLevelObjective, gener
 		ExternalURL:                externalURL,
 	}
 
+	threshold, err := objective.ThresholdRules(opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get threshold rules: %w", err)
+	}
+
 	increases, err := objective.IncreaseRules(opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get increase rules: %w", err)
@@ -468,6 +503,9 @@ func makePrometheusRule(kubeObjective pyrrav1alpha1.ServiceLevelObjective, gener
 
 	rule := monitoringv1.PrometheusRuleSpec{
 		Groups: []monitoringv1.RuleGroup{increases, burnrates},
+	}
+	if len(threshold.Rules) > 0 {
+		rule.Groups = append([]monitoringv1.RuleGroup{threshold}, rule.Groups...)
 	}
 
 	if genericRules {
@@ -500,6 +538,11 @@ func makeSplitPrometheusRules(kubeObjective pyrrav1alpha1.ServiceLevelObjective,
 		ExternalURL:                externalURL,
 	}
 
+	threshold, err := objective.ThresholdRules(opts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get threshold rules: %w", err)
+	}
+
 	shortGroup, longIncreaseGroup, err := objective.SplitIncreaseRules(opts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get split increase rules: %w", err)
@@ -513,6 +556,9 @@ func makeSplitPrometheusRules(kubeObjective pyrrav1alpha1.ServiceLevelObjective,
 	// Short PrometheusRule: short increase rules + burnrates (with alerts)
 	shortSpec := monitoringv1.PrometheusRuleSpec{
 		Groups: []monitoringv1.RuleGroup{shortGroup, burnrates},
+	}
+	if len(threshold.Rules) > 0 {
+		shortSpec.Groups = append([]monitoringv1.RuleGroup{threshold}, shortSpec.Groups...)
 	}
 
 	// Long PrometheusRule: only the long increase rules (subquery for full window)

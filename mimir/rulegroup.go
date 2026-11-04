@@ -44,6 +44,31 @@ func (c *Client) SetRuleGroup(ctx context.Context, namespace string, ruleGroup r
 	return nil
 }
 
+// DeleteRuleGroup deletes a rule group. An absent group is already deleted.
+func (c *Client) DeleteRuleGroup(ctx context.Context, namespace, group string) error {
+	path := c.address.JoinPath(c.prometheusPrefix, "/config/v1/rules/", namespace, group)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, path.String(), nil)
+	if err != nil {
+		return err
+	}
+
+	if c.orgID != "" {
+		req.Header.Set(TenantHeaderName, c.orgID)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("unexpected status code: %d, expected %d or %d", resp.StatusCode, http.StatusAccepted, http.StatusNotFound)
+	}
+	return nil
+}
+
 // DeleteNamespace deletes all the rule groups in a namespace (including the namespace itself).
 func (c *Client) DeleteNamespace(ctx context.Context, namespace string) error {
 	path := c.address.JoinPath(c.prometheusPrefix, "/config/v1/rules/", namespace)

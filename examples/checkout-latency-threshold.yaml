@@ -1,0 +1,15 @@
+apiVersion: pyrra.dev/v1alpha1
+kind: ServiceLevelObjective
+metadata:
+  name: checkout-latency
+  namespace: monitoring
+spec:
+  target: '99'
+  window: 28d
+  indicator:
+    threshold:
+      histogram:
+        metric: http_request_duration_seconds_bucket{job="checkout"}
+        quantile: 0.95
+      op: lte
+      value: 0.4
